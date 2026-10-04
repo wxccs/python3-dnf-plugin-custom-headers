@@ -1,0 +1,11 @@
+# python bytecode / test artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# build artifacts
+.build/
+dist/
+
+# local tooling
+.claude/

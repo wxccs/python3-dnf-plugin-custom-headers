@@ -1,0 +1,97 @@
+name: Build RPMs
+
+# RPMs are built and released only when a signed version tag (vX.Y.Z)
+# is pushed - see "Release process" in AGENTS.md. Pushing to main alone
+# never triggers a build.
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    name: ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # DNF4-based (or DNF4-capable) RHEL family distros.
+        # Rocky 10 lives on quay.io only (there is no docker.io
+        # library/rockylinux:10), hence the different reference.
+        # Note: fedora:39/40 are EOL but kept for downstream users; if
+        # their mirrors go away, just drop them from the matrix.
+        image:
+          - rockylinux:8
+          - rockylinux:9
+          - quay.io/rockylinux/rockylinux:10
+          - almalinux:8
+          - almalinux:9
+          - almalinux:10
+          - quay.io/centos/centos:stream9
+          - quay.io/centos/centos:stream10
+          - oraclelinux:8
+          - oraclelinux:9
+          - fedora:39
+          - fedora:40
+    steps:
+      - name: Install build dependencies
+        # python3-dnf (which provides the dnf4 command on el10) is always
+        # present in these images because dnf itself needs it.
+        run: |
+          dnf install -y rpm-build python3 git createrepo_c
+          # preferred by the spec when available, but the spec has a
+          # dnf-based fallback and does not strictly require it
+          dnf install -y python3-rpm-macros || true
+
+      - name: Slugify image name (artifact naming)
+        run: |
+          echo "SLUG=$(echo '${{ matrix.image }}' | sed -e 's|[:/]|-|g')" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@v7
+
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Build RPM
+        run: ./build.sh
+
+      - name: Install built RPM
+        run: dnf install -y dist/*.noarch.rpm
+
+      - name: Smoke test (metadata headers)
+        run: ./scripts/smoke-test.sh
+
+      - name: Integration test (metadata + package download headers)
+        run: ./scripts/integration-test.sh
+
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: rpms-${{ env.SLUG }}
+          path: dist/*.rpm
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download all RPM artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          pattern: rpms-*
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -l artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*.rpm
+          generate_release_notes: true
